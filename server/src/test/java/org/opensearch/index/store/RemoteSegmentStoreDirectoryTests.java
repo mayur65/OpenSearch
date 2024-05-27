@@ -639,7 +639,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
             @Override
             public void onFailure(Exception e) {}
         };
-        remoteSegmentStoreDirectory.copyFrom(storeDirectory, filename, IOContext.DEFAULT, completionListener);
+        remoteSegmentStoreDirectory.copyFrom(storeDirectory, filename, IOContext.DEFAULT, completionListener, false);
         assertTrue(latch.await(5000, TimeUnit.SECONDS));
         assertTrue(remoteSegmentStoreDirectory.getSegmentsUploadedToRemoteStore().containsKey(filename));
         storeDirectory.close();
@@ -683,7 +683,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
                 latch.countDown();
             }
         };
-        remoteSegmentStoreDirectory.copyFrom(storeDirectory, filename, IOContext.DEFAULT, completionListener);
+        remoteSegmentStoreDirectory.copyFrom(storeDirectory, filename, IOContext.DEFAULT, completionListener, false);
         assertTrue(latch.await(5000, TimeUnit.SECONDS));
         assertFalse(remoteSegmentStoreDirectory.getSegmentsUploadedToRemoteStore().containsKey(filename));
 
@@ -706,7 +706,7 @@ public class RemoteSegmentStoreDirectoryTests extends IndexShardTestCase {
         ShardId shardId = new ShardId(Index.UNKNOWN_INDEX_NAME, indexUUID, Integer.parseInt("0"));
         RemoteStorePathStrategy pathStrategy = randomFrom(
             new RemoteStorePathStrategy(PathType.FIXED),
-            new RemoteStorePathStrategy(PathType.HASHED_PREFIX, PathHashAlgorithm.FNV_1A)
+            new RemoteStorePathStrategy(randomFrom(PathType.HASHED_INFIX, PathType.HASHED_PREFIX), randomFrom(PathHashAlgorithm.values()))
         );
 
         RemoteSegmentStoreDirectory.remoteDirectoryCleanup(

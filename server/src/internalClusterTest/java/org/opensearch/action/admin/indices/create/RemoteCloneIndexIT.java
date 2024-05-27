@@ -40,14 +40,19 @@ package org.opensearch.action.admin.indices.create;
  */
 
 import org.opensearch.Version;
+import org.opensearch.action.admin.cluster.health.ClusterHealthRequest;
+import org.opensearch.action.admin.cluster.health.ClusterHealthResponse;
 import org.opensearch.action.admin.indices.settings.get.GetSettingsResponse;
 import org.opensearch.action.admin.indices.shrink.ResizeType;
 import org.opensearch.action.admin.indices.stats.IndicesStatsResponse;
+import org.opensearch.client.Requests;
 import org.opensearch.cluster.routing.allocation.decider.EnableAllocationDecider;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.core.xcontent.MediaTypeRegistry;
 import org.opensearch.index.query.TermsQueryBuilder;
+import org.opensearch.indices.recovery.RecoverySettings;
 import org.opensearch.remotestore.RemoteStoreBaseIntegTestCase;
+import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.test.VersionUtils;
 
 import java.util.concurrent.ExecutionException;
@@ -56,6 +61,7 @@ import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertAcked;
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertHitCount;
 import static org.hamcrest.Matchers.equalTo;
 
+@OpenSearchIntegTestCase.ClusterScope(scope = OpenSearchIntegTestCase.Scope.TEST, numDataNodes = 0)
 public class RemoteCloneIndexIT extends RemoteStoreBaseIntegTestCase {
 
     @Override
@@ -125,7 +131,9 @@ public class RemoteCloneIndexIT extends RemoteStoreBaseIntegTestCase {
                 .cluster()
                 .prepareUpdateSettings()
                 .setTransientSettings(
-                    Settings.builder().put(EnableAllocationDecider.CLUSTER_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), (String) null)
+                    Settings.builder()
+                        .put(EnableAllocationDecider.CLUSTER_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), (String) null)
+                        .put(RecoverySettings.INDICES_INTERNAL_REMOTE_UPLOAD_TIMEOUT.getKey(), (String) null)
                 )
                 .get();
         }
@@ -133,6 +141,7 @@ public class RemoteCloneIndexIT extends RemoteStoreBaseIntegTestCase {
     }
 
     public void testCreateCloneIndexFailure() throws ExecutionException, InterruptedException {
+        asyncUploadMockFsRepo = false;
         Version version = VersionUtils.randomIndexCompatibleVersion(random());
         int numPrimaryShards = 1;
         prepareCreate("source").setSettings(
@@ -156,7 +165,11 @@ public class RemoteCloneIndexIT extends RemoteStoreBaseIntegTestCase {
         client().admin()
             .cluster()
             .prepareUpdateSettings()
-            .setTransientSettings(Settings.builder().put(EnableAllocationDecider.CLUSTER_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none"))
+            .setTransientSettings(
+                Settings.builder()
+                    .put(EnableAllocationDecider.CLUSTER_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), "none")
+                    .put(RecoverySettings.INDICES_INTERNAL_REMOTE_UPLOAD_TIMEOUT.getKey(), "10s")
+            )
             .get();
         try {
             setFailRate(REPOSITORY_NAME, 100);
@@ -168,9 +181,14 @@ public class RemoteCloneIndexIT extends RemoteStoreBaseIntegTestCase {
                 .setWaitForActiveShards(0)
                 .setSettings(Settings.builder().put("index.number_of_replicas", 0).putNull("index.blocks.write").build())
                 .get();
-
-            Thread.sleep(2000);
-            ensureYellow("target");
+            // waiting more than waitForRemoteStoreSync's sleep time of 30 sec to deterministically fail
+            Thread.sleep(40000);
+            ensureRed("target");
+            ClusterHealthRequest healthRequest = Requests.clusterHealthRequest()
+                .waitForNoRelocatingShards(true)
+                .waitForNoInitializingShards(true);
+            ClusterHealthResponse actionGet = client().admin().cluster().health(healthRequest).actionGet();
+            assertEquals(actionGet.getUnassignedShards(), numPrimaryShards);
 
         } catch (ExecutionException | InterruptedException e) {
             throw new RuntimeException(e);
@@ -182,11 +200,12 @@ public class RemoteCloneIndexIT extends RemoteStoreBaseIntegTestCase {
                 .cluster()
                 .prepareUpdateSettings()
                 .setTransientSettings(
-                    Settings.builder().put(EnableAllocationDecider.CLUSTER_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), (String) null)
+                    Settings.builder()
+                        .put(EnableAllocationDecider.CLUSTER_ROUTING_REBALANCE_ENABLE_SETTING.getKey(), (String) null)
+                        .put(RecoverySettings.INDICES_INTERNAL_REMOTE_UPLOAD_TIMEOUT.getKey(), (String) null)
                 )
                 .get();
         }
-
     }
 
 }
