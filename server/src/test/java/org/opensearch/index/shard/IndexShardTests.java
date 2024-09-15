@@ -2896,10 +2896,10 @@ public class IndexShardTests extends IndexShardTestCase {
             RecoverySource.ExistingStoreRecoverySource.INSTANCE
         );
         routing = ShardRoutingHelper.newWithRestoreSource(routing, new RecoverySource.EmptyStoreRecoverySource());
-
         target = reinitShard(target, routing);
-
-        target.syncSegmentsFromGivenRemoteSegmentStore(false, tempRemoteSegmentDirectory, primaryTerm, commitGeneration);
+        DiscoveryNode localNode = new DiscoveryNode("foo", buildNewFakeTransportAddress(), emptyMap(), emptySet(), Version.CURRENT);
+        target.markAsRecovering("from snapshot", new RecoveryState(routing, localNode, null));
+        target.syncSegmentsFromGivenRemoteSegmentStore(false, tempRemoteSegmentDirectory, null, false);
         RemoteSegmentStoreDirectory remoteStoreDirectory = ((RemoteSegmentStoreDirectory) ((FilterDirectory) ((FilterDirectory) target
             .remoteStore()
             .directory()).getDelegate()).getDelegate());
@@ -2955,6 +2955,14 @@ public class IndexShardTests extends IndexShardTestCase {
                 new IndexId("test", UUIDs.randomBase64UUID(random()))
             )
         );
+
+        // Make sure to drain refreshes from the shard. Otherwise, if the refresh is in-progress, it overlaps with
+        // deletion of segment files in the subsequent code block.
+        for (ReferenceManager.RefreshListener refreshListener : target.getEngine().config().getInternalRefreshListener()) {
+            if (refreshListener instanceof ReleasableRetryableRefreshListener) {
+                ((ReleasableRetryableRefreshListener) refreshListener).drainRefreshes();
+            }
+        }
 
         // Delete files in store directory to restore from remote directory
         Directory storeDirectory = target.store().directory();

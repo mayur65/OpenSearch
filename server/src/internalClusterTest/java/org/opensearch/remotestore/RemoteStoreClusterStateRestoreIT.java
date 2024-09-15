@@ -36,6 +36,8 @@ import org.opensearch.common.settings.Settings;
 import org.opensearch.gateway.remote.ClusterMetadataManifest;
 import org.opensearch.gateway.remote.ClusterMetadataManifest.UploadedIndexMetadata;
 import org.opensearch.gateway.remote.RemoteClusterStateService;
+import org.opensearch.index.remote.RemoteStoreEnums.PathType;
+import org.opensearch.repositories.blobstore.BlobStoreRepository;
 import org.opensearch.test.InternalTestCluster;
 import org.opensearch.test.OpenSearchIntegTestCase;
 import org.junit.Before;
@@ -57,6 +59,7 @@ import static org.opensearch.cluster.metadata.IndexMetadata.INDEX_READ_ONLY_SETT
 import static org.opensearch.cluster.metadata.Metadata.CLUSTER_READ_ONLY_BLOCK;
 import static org.opensearch.cluster.metadata.Metadata.SETTING_READ_ONLY_SETTING;
 import static org.opensearch.gateway.remote.RemoteClusterStateService.REMOTE_CLUSTER_STATE_ENABLED_SETTING;
+import static org.opensearch.gateway.remote.RemoteClusterStateUtils.encodeString;
 import static org.opensearch.indices.ShardLimitValidator.SETTING_CLUSTER_MAX_SHARDS_PER_NODE;
 import static org.opensearch.repositories.blobstore.BlobStoreRepository.SYSTEM_REPOSITORY_SETTING;
 import static org.opensearch.test.hamcrest.OpenSearchAssertions.assertAcked;
@@ -325,12 +328,17 @@ public class RemoteStoreClusterStateRestoreIT extends BaseRemoteStoreRestoreIT {
         internalCluster().stopAllNodes();
         // Step - 3 Delete index metadata file in remote
         try {
-            Files.move(
-                segmentRepoPath.resolve(
-                    RemoteClusterStateService.encodeString(clusterName) + "/cluster-state/" + prevClusterUUID + "/index"
-                ),
-                segmentRepoPath.resolve("cluster-state/")
+            RemoteClusterStateService remoteClusterStateService = internalCluster().getInstance(
+                RemoteClusterStateService.class,
+                internalCluster().getClusterManagerName()
             );
+            ClusterMetadataManifest manifest = remoteClusterStateService.getLatestClusterMetadataManifest(
+                getClusterState().getClusterName().value(),
+                getClusterState().metadata().clusterUUID()
+            ).get();
+            for (UploadedIndexMetadata md : manifest.getIndices()) {
+                Files.move(segmentRepoPath.resolve(md.getUploadedFilename()), segmentRepoPath.resolve("cluster-state/"));
+            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -354,10 +362,7 @@ public class RemoteStoreClusterStateRestoreIT extends BaseRemoteStoreRestoreIT {
         try {
             Files.move(
                 segmentRepoPath.resolve(
-                    RemoteClusterStateService.encodeString(clusterService().state().getClusterName().value())
-                        + "/cluster-state/"
-                        + prevClusterUUID
-                        + "/manifest"
+                    encodeString(clusterService().state().getClusterName().value()) + "/cluster-state/" + prevClusterUUID + "/manifest"
                 ),
                 segmentRepoPath.resolve("cluster-state/")
             );
@@ -480,14 +485,7 @@ public class RemoteStoreClusterStateRestoreIT extends BaseRemoteStoreRestoreIT {
 
     private Path registerCustomRepository() {
         Path path = randomRepoPath();
-        assertAcked(
-            client().admin()
-                .cluster()
-                .preparePutRepository("custom-repo")
-                .setType("fs")
-                .setSettings(Settings.builder().put("location", path).put("compress", false))
-                .get()
-        );
+        createRepository("custom-repo", "fs", Settings.builder().put("location", path).put("compress", false));
         return path;
     }
 
@@ -497,9 +495,15 @@ public class RemoteStoreClusterStateRestoreIT extends BaseRemoteStoreRestoreIT {
         assertTrue(SYSTEM_REPOSITORY_SETTING.get(repositoriesMetadata.repository(REPOSITORY_NAME).settings()));
         assertTrue(SYSTEM_REPOSITORY_SETTING.get(repositoriesMetadata.repository(REPOSITORY_2_NAME).settings()));
         assertEquals("fs", repositoriesMetadata.repository("custom-repo").type());
+        Settings settings = repositoriesMetadata.repository("custom-repo").settings();
+        PathType pathType = BlobStoreRepository.SHARD_PATH_TYPE.get(settings);
         assertEquals(
-            Settings.builder().put("location", repoPath).put("compress", false).build(),
-            repositoriesMetadata.repository("custom-repo").settings()
+            Settings.builder()
+                .put("location", repoPath)
+                .put("compress", false)
+                .put(BlobStoreRepository.SHARD_PATH_TYPE.getKey(), pathType)
+                .build(),
+            settings
         );
 
         // repo cleanup post verification

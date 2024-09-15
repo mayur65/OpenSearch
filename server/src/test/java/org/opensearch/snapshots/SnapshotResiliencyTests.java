@@ -191,7 +191,6 @@ import org.opensearch.index.seqno.GlobalCheckpointSyncAction;
 import org.opensearch.index.seqno.RetentionLeaseSyncer;
 import org.opensearch.index.shard.PrimaryReplicaSyncer;
 import org.opensearch.index.store.RemoteSegmentStoreDirectoryFactory;
-import org.opensearch.index.store.remote.filecache.FileCache;
 import org.opensearch.index.store.remote.filecache.FileCacheStats;
 import org.opensearch.indices.DefaultRemoteStoreSettings;
 import org.opensearch.indices.IndicesModule;
@@ -230,6 +229,7 @@ import org.opensearch.snapshots.mockstore.MockEventuallyConsistentRepository;
 import org.opensearch.tasks.TaskResourceTrackingService;
 import org.opensearch.telemetry.metrics.noop.NoopMetricsRegistry;
 import org.opensearch.telemetry.tracing.noop.NoopTracer;
+import org.opensearch.test.OpenSearchIntegTestCase;
 import org.opensearch.test.OpenSearchTestCase;
 import org.opensearch.test.disruption.DisruptableMockTransport;
 import org.opensearch.threadpool.ThreadPool;
@@ -1502,12 +1502,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
     private StepListener<CreateIndexResponse> createRepoAndIndex(String repoName, String index, int shards) {
         final StepListener<AcknowledgedResponse> createRepositoryListener = new StepListener<>();
 
-        client().admin()
-            .cluster()
-            .preparePutRepository(repoName)
-            .setType(FsRepository.TYPE)
-            .setSettings(Settings.builder().put("location", randomAlphaOfLength(10)))
-            .execute(createRepositoryListener);
+        Settings.Builder settings = Settings.builder().put("location", randomAlphaOfLength(10));
+        OpenSearchIntegTestCase.putRepository(client().admin().cluster(), repoName, FsRepository.TYPE, settings, createRepositoryListener);
 
         final StepListener<CreateIndexResponse> createIndexResponseStepListener = new StepListener<>();
 
@@ -1681,7 +1677,6 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     ClusterBootstrapService.INITIAL_CLUSTER_MANAGER_NODES_SETTING.getKey(),
                     ClusterBootstrapService.INITIAL_CLUSTER_MANAGER_NODES_SETTING.get(Settings.EMPTY)
                 )
-                .put(FileCache.DATA_TO_FILE_CACHE_SIZE_RATIO_SETTING.getKey(), 5)
                 .put(MappingUpdatedAction.INDICES_MAX_IN_FLIGHT_UPDATES_SETTING.getKey(), 1000) // o.w. some tests might block
                 .build()
         );
@@ -1923,13 +1918,7 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     settings,
                     clusterSettings,
                     clusterManagerService,
-                    new ClusterApplierService(
-                        node.getName(),
-                        settings,
-                        clusterSettings,
-                        threadPool,
-                        new ClusterManagerMetrics(NoopMetricsRegistry.INSTANCE)
-                    ) {
+                    new ClusterApplierService(node.getName(), settings, clusterSettings, threadPool) {
                         @Override
                         protected PrioritizedOpenSearchThreadPoolExecutor createThreadPoolExecutor() {
                             return new MockSinglePrioritizingExecutor(node.getName(), deterministicTaskQueue, threadPool);
@@ -2023,7 +2012,9 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     indexNameExpressionResolver,
                     repositoriesService,
                     transportService,
-                    actionFilters
+                    actionFilters,
+                    null,
+                    DefaultRemoteStoreSettings.INSTANCE
                 );
                 nodeEnv = new NodeEnvironment(settings, environment);
                 final NamedXContentRegistry namedXContentRegistry = new NamedXContentRegistry(Collections.emptyList());
@@ -2080,7 +2071,7 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     emptyMap(),
                     null,
                     emptyMap(),
-                    new RemoteSegmentStoreDirectoryFactory(() -> repositoriesService, threadPool),
+                    new RemoteSegmentStoreDirectoryFactory(() -> repositoriesService, threadPool, ""),
                     repositoriesServiceReference::get,
                     null,
                     new RemoteStoreStatsTrackerFactory(clusterService, settings),
@@ -2252,7 +2243,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     ),
                     shardLimitValidator,
                     indicesService,
-                    clusterInfoService::getClusterInfo
+                    clusterInfoService::getClusterInfo,
+                    () -> 5.0
                 );
                 actions.put(
                     PutMappingAction.INSTANCE,
@@ -2292,7 +2284,9 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     new FetchPhase(Collections.emptyList()),
                     responseCollectorService,
                     new NoneCircuitBreakerService(),
-                    null
+                    null,
+                    new TaskResourceTrackingService(settings, clusterSettings, threadPool),
+                    Collections.emptyList()
                 );
                 SearchPhaseController searchPhaseController = new SearchPhaseController(
                     writableRegistry(),
@@ -2327,7 +2321,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                         ),
                         NoopMetricsRegistry.INSTANCE,
                         searchRequestOperationsCompositeListenerFactory,
-                        NoopTracer.INSTANCE
+                        NoopTracer.INSTANCE,
+                        new TaskResourceTrackingService(settings, clusterSettings, threadPool)
                     )
                 );
                 actions.put(
@@ -2373,7 +2368,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                         snapshotsService,
                         threadPool,
                         actionFilters,
-                        indexNameExpressionResolver
+                        indexNameExpressionResolver,
+                        DefaultRemoteStoreSettings.INSTANCE
                     )
                 );
                 actions.put(
@@ -2383,6 +2379,7 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                         clusterService,
                         threadPool,
                         snapshotsService,
+                        repositoriesService,
                         actionFilters,
                         indexNameExpressionResolver
                     )
@@ -2416,7 +2413,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                         clusterService,
                         threadPool,
                         actionFilters,
-                        indexNameExpressionResolver
+                        indexNameExpressionResolver,
+                        null
                     )
                 );
                 actions.put(
@@ -2458,7 +2456,8 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                         clusterService,
                         threadPool,
                         actionFilters,
-                        indexNameExpressionResolver
+                        indexNameExpressionResolver,
+                        null
                     )
                 );
 
@@ -2560,7 +2559,9 @@ public class SnapshotResiliencyTests extends OpenSearchTestCase {
                     ElectionStrategy.DEFAULT_INSTANCE,
                     () -> new StatusInfo(HEALTHY, "healthy-info"),
                     persistedStateRegistry,
-                    remoteStoreNodeService
+                    remoteStoreNodeService,
+                    new ClusterManagerMetrics(NoopMetricsRegistry.INSTANCE),
+                    null
                 );
                 clusterManagerService.setClusterStatePublisher(coordinator);
                 coordinator.start();

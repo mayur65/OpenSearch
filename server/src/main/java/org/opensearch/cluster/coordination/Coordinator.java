@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.message.ParameterizedMessage;
 import org.opensearch.cluster.ClusterChangedEvent;
+import org.opensearch.cluster.ClusterManagerMetrics;
 import org.opensearch.cluster.ClusterName;
 import org.opensearch.cluster.ClusterState;
 import org.opensearch.cluster.ClusterStateTaskConfig;
@@ -84,6 +85,7 @@ import org.opensearch.discovery.HandshakingTransportAddressConnector;
 import org.opensearch.discovery.PeerFinder;
 import org.opensearch.discovery.SeedHostsProvider;
 import org.opensearch.discovery.SeedHostsResolver;
+import org.opensearch.gateway.remote.RemoteClusterStateService;
 import org.opensearch.monitor.NodeHealthService;
 import org.opensearch.monitor.StatusInfo;
 import org.opensearch.node.remotestore.RemoteStoreNodeService;
@@ -207,7 +209,9 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
         ElectionStrategy electionStrategy,
         NodeHealthService nodeHealthService,
         PersistedStateRegistry persistedStateRegistry,
-        RemoteStoreNodeService remoteStoreNodeService
+        RemoteStoreNodeService remoteStoreNodeService,
+        ClusterManagerMetrics clusterManagerMetrics,
+        RemoteClusterStateService remoteClusterStateService
     ) {
         this.settings = settings;
         this.transportService = transportService;
@@ -259,16 +263,25 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
             transportService,
             namedWriteableRegistry,
             this::handlePublishRequest,
-            this::handleApplyCommit
+            this::handleApplyCommit,
+            remoteClusterStateService
         );
-        this.leaderChecker = new LeaderChecker(settings, clusterSettings, transportService, this::onLeaderFailure, nodeHealthService);
+        this.leaderChecker = new LeaderChecker(
+            settings,
+            clusterSettings,
+            transportService,
+            this::onLeaderFailure,
+            nodeHealthService,
+            clusterManagerMetrics
+        );
         this.followersChecker = new FollowersChecker(
             settings,
             clusterSettings,
             transportService,
             this::onFollowerCheckRequest,
             this::removeNode,
-            nodeHealthService
+            nodeHealthService,
+            clusterManagerMetrics
         );
         this.nodeRemovalExecutor = new NodeRemovalClusterStateTaskExecutor(allocationService, logger);
         this.clusterApplier = clusterApplier;
@@ -373,6 +386,8 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
             coordinationState.get().handleCommit(applyCommitRequest);
             final ClusterState committedState = hideStateIfNotRecovered(coordinationState.get().getLastAcceptedState());
             applierState = mode == Mode.CANDIDATE ? clusterStateWithNoClusterManagerBlock(committedState) : committedState;
+            clusterApplier.setPreCommitState(applierState);
+
             if (applyCommitRequest.getSourceNode().equals(getLocalNode())) {
                 // cluster-manager node applies the committed state at the end of the publication process, not here.
                 applyListener.onResponse(null);
@@ -888,6 +903,10 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
                 stats.add(persistedStateRegistry.getPersistedState(stateType).getStats());
             }
         });
+        if (coordinationState.get().isRemotePublicationEnabled()) {
+            stats.add(publicationHandler.getFullDownloadStats());
+            stats.add(publicationHandler.getDiffDownloadStats());
+        }
         clusterStateStats.setPersistenceStats(stats);
         return new DiscoveryStats(new PendingClusterStateStats(0, 0, 0), publicationHandler.stats(), clusterStateStats);
     }
@@ -1320,8 +1339,11 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
                     + clusterState;
 
                 final PublicationTransportHandler.PublicationContext publicationContext = publicationHandler.newPublicationContext(
-                    clusterChangedEvent
+                    clusterChangedEvent,
+                    coordinationState.get().isRemotePublicationEnabled(),
+                    persistedStateRegistry
                 );
+                logger.debug("initialized PublicationContext using class: {}", publicationContext.getClass().toString());
 
                 final PublishRequest publishRequest = coordinationState.get().handleClientValue(clusterState);
                 final CoordinatorPublication publication = new CoordinatorPublication(
@@ -1841,5 +1863,12 @@ public class Coordinator extends AbstractLifecycleComponent implements Discovery
     // TODO: only here temporarily for BWC development, remove once complete
     public static boolean isZen1Node(DiscoveryNode discoveryNode) {
         return Booleans.isTrue(discoveryNode.getAttributes().getOrDefault("zen1", "false"));
+    }
+
+    public boolean isRemotePublicationEnabled() {
+        if (coordinationState.get() != null) {
+            return coordinationState.get().isRemotePublicationEnabled();
+        }
+        return false;
     }
 }

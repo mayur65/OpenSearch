@@ -40,11 +40,17 @@ import static org.opensearch.index.remote.RemoteStoreEnums.DataType.METADATA;
 @PublicApi(since = "2.3.0")
 public class RemoteSegmentStoreDirectoryFactory implements IndexStorePlugin.DirectoryFactory {
     private final Supplier<RepositoriesService> repositoriesService;
+    private final String segmentsPathFixedPrefix;
 
     private final ThreadPool threadPool;
 
-    public RemoteSegmentStoreDirectoryFactory(Supplier<RepositoriesService> repositoriesService, ThreadPool threadPool) {
+    public RemoteSegmentStoreDirectoryFactory(
+        Supplier<RepositoriesService> repositoriesService,
+        ThreadPool threadPool,
+        String segmentsPathFixedPrefix
+    ) {
         this.repositoriesService = repositoriesService;
+        this.segmentsPathFixedPrefix = segmentsPathFixedPrefix;
         this.threadPool = threadPool;
     }
 
@@ -65,27 +71,30 @@ public class RemoteSegmentStoreDirectoryFactory implements IndexStorePlugin.Dire
             BlobPath repositoryBasePath = blobStoreRepository.basePath();
             String shardIdStr = String.valueOf(shardId.id());
 
-            RemoteStorePathStrategy.PathInput dataPathInput = RemoteStorePathStrategy.PathInput.builder()
+            RemoteStorePathStrategy.ShardDataPathInput dataPathInput = RemoteStorePathStrategy.ShardDataPathInput.builder()
                 .basePath(repositoryBasePath)
                 .indexUUID(indexUUID)
                 .shardId(shardIdStr)
                 .dataCategory(SEGMENTS)
                 .dataType(DATA)
+                .fixedPrefix(segmentsPathFixedPrefix)
                 .build();
             // Derive the path for data directory of SEGMENTS
             BlobPath dataPath = pathStrategy.generatePath(dataPathInput);
             RemoteDirectory dataDirectory = new RemoteDirectory(
                 blobStoreRepository.blobStore().blobContainer(dataPath),
                 blobStoreRepository::maybeRateLimitRemoteUploadTransfers,
+                blobStoreRepository::maybeRateLimitLowPriorityRemoteUploadTransfers,
                 blobStoreRepository::maybeRateLimitRemoteDownloadTransfers
             );
 
-            RemoteStorePathStrategy.PathInput mdPathInput = RemoteStorePathStrategy.PathInput.builder()
+            RemoteStorePathStrategy.ShardDataPathInput mdPathInput = RemoteStorePathStrategy.ShardDataPathInput.builder()
                 .basePath(repositoryBasePath)
                 .indexUUID(indexUUID)
                 .shardId(shardIdStr)
                 .dataCategory(SEGMENTS)
                 .dataType(METADATA)
+                .fixedPrefix(segmentsPathFixedPrefix)
                 .build();
             // Derive the path for metadata directory of SEGMENTS
             BlobPath mdPath = pathStrategy.generatePath(mdPathInput);
@@ -97,13 +106,18 @@ public class RemoteSegmentStoreDirectoryFactory implements IndexStorePlugin.Dire
                 repositoryName,
                 indexUUID,
                 shardIdStr,
-                pathStrategy
+                pathStrategy,
+                segmentsPathFixedPrefix
             );
 
             return new RemoteSegmentStoreDirectory(dataDirectory, metadataDirectory, mdLockManager, threadPool, shardId);
         } catch (RepositoryMissingException e) {
             throw new IllegalArgumentException("Repository should be created before creating index with remote_store enabled setting", e);
         }
+    }
+
+    public Supplier<RepositoriesService> getRepositoriesService() {
+        return this.repositoriesService;
     }
 
 }

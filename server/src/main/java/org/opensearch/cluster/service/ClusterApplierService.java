@@ -61,7 +61,9 @@ import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.util.concurrent.OpenSearchExecutors;
 import org.opensearch.common.util.concurrent.PrioritizedOpenSearchThreadPoolExecutor;
 import org.opensearch.common.util.concurrent.ThreadContext;
+import org.opensearch.common.util.concurrent.ThreadContextAccess;
 import org.opensearch.core.concurrency.OpenSearchRejectedExecutionException;
+import org.opensearch.telemetry.metrics.noop.NoopMetricsRegistry;
 import org.opensearch.telemetry.metrics.tags.Tags;
 import org.opensearch.threadpool.Scheduler;
 import org.opensearch.threadpool.ThreadPool;
@@ -117,13 +119,17 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
 
     private final Collection<ClusterStateListener> clusterStateListeners = new CopyOnWriteArrayList<>();
     private final Map<TimeoutClusterStateListener, NotifyTimeout> timeoutClusterStateListeners = new ConcurrentHashMap<>();
-
+    private final AtomicReference<ClusterState> preCommitState = new AtomicReference<>(); // last state which is yet to be applied
     private final AtomicReference<ClusterState> state; // last applied state
 
     private final String nodeName;
 
     private NodeConnectionsService nodeConnectionsService;
     private final ClusterManagerMetrics clusterManagerMetrics;
+
+    public ClusterApplierService(String nodeName, Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+        this(nodeName, settings, clusterSettings, threadPool, new ClusterManagerMetrics(NoopMetricsRegistry.INSTANCE));
+    }
 
     public ClusterApplierService(
         String nodeName,
@@ -391,7 +397,7 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
         final ThreadContext threadContext = threadPool.getThreadContext();
         final Supplier<ThreadContext.StoredContext> supplier = threadContext.newRestorableContext(true);
         try (ThreadContext.StoredContext ignore = threadContext.stashContext()) {
-            threadContext.markAsSystemContext();
+            ThreadContextAccess.doPrivilegedVoid(threadContext::markAsSystemContext);
             final UpdateTask updateTask = new UpdateTask(
                 config.priority(),
                 source,
@@ -744,4 +750,18 @@ public class ClusterApplierService extends AbstractLifecycleComponent implements
     protected boolean applicationMayFail() {
         return false;
     }
+
+    /**
+     * Pre-commit State of the cluster-applier
+     * @return ClusterState
+     */
+    public ClusterState preCommitState() {
+        return preCommitState.get();
+    }
+
+    @Override
+    public void setPreCommitState(ClusterState clusterState) {
+        preCommitState.set(clusterState);
+    }
+
 }

@@ -54,6 +54,7 @@ import org.opensearch.common.settings.Setting.Property;
 import org.opensearch.common.settings.Settings;
 import org.opensearch.index.IndexingPressureService;
 import org.opensearch.node.Node;
+import org.opensearch.telemetry.metrics.noop.NoopMetricsRegistry;
 import org.opensearch.threadpool.ThreadPool;
 
 import java.util.Collections;
@@ -91,6 +92,10 @@ public class ClusterService extends AbstractLifecycleComponent {
     private RerouteService rerouteService;
 
     private IndexingPressureService indexingPressureService;
+
+    public ClusterService(Settings settings, ClusterSettings clusterSettings, ThreadPool threadPool) {
+        this(settings, clusterSettings, threadPool, new ClusterManagerMetrics(NoopMetricsRegistry.INSTANCE));
+    }
 
     public ClusterService(
         Settings settings,
@@ -176,6 +181,14 @@ public class ClusterService extends AbstractLifecycleComponent {
      */
     public ClusterState state() {
         return clusterApplierService.state();
+    }
+
+    /**
+     * The state that is persisted to store but may not be applied to cluster.
+     * @return ClusterState
+     */
+    public ClusterState preCommitState() {
+        return clusterApplierService.preCommitState();
     }
 
     /**

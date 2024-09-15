@@ -34,6 +34,7 @@ package org.opensearch.action.admin.cluster.stats;
 
 import org.apache.lucene.store.AlreadyClosedException;
 import org.opensearch.action.FailedNodeException;
+import org.opensearch.action.admin.cluster.health.ClusterHealthRequest;
 import org.opensearch.action.admin.cluster.node.info.NodeInfo;
 import org.opensearch.action.admin.cluster.node.stats.NodeStats;
 import org.opensearch.action.admin.indices.stats.CommonStats;
@@ -209,11 +210,17 @@ public class TransportClusterStatsAction extends TransportNodesAction<
 
         ClusterHealthStatus clusterStatus = null;
         if (clusterService.state().nodes().isLocalNodeElectedClusterManager()) {
-            clusterStatus = new ClusterStateHealth(clusterService.state()).getStatus();
+            clusterStatus = new ClusterStateHealth(clusterService.state(), ClusterHealthRequest.Level.CLUSTER).getStatus();
         }
 
-        return new ClusterStatsNodeResponse(nodeInfo.getNode(), clusterStatus, nodeInfo, nodeStats, shardsStats.toArray(new ShardStats[0]));
-
+        return new ClusterStatsNodeResponse(
+            nodeInfo.getNode(),
+            clusterStatus,
+            nodeInfo,
+            nodeStats,
+            shardsStats.toArray(new ShardStats[0]),
+            nodeRequest.request.useAggregatedNodeLevelResponses()
+        );
     }
 
     /**
@@ -223,7 +230,7 @@ public class TransportClusterStatsAction extends TransportNodesAction<
      */
     public static class ClusterStatsNodeRequest extends TransportRequest {
 
-        ClusterStatsRequest request;
+        protected ClusterStatsRequest request;
 
         public ClusterStatsNodeRequest(StreamInput in) throws IOException {
             super(in);
